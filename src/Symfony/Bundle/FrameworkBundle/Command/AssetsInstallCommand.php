@@ -18,7 +18,9 @@ use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Filesystem\Exception\IOException;
+use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Finder\Finder;
+use Symfony\Component\HttpKernel\Bundle\BundleInterface;
 
 /**
  * Command that places bundle web assets into a given directory.
@@ -29,7 +31,7 @@ use Symfony\Component\Finder\Finder;
 class AssetsInstallCommand extends ContainerAwareCommand
 {
     /**
-     * @var \Symfony\Component\Filesystem\Filesystem
+     * @var Filesystem
      */
     private $filesystem;
 
@@ -71,8 +73,6 @@ EOT
 
     /**
      * {@inheritdoc}
-     *
-     * @throws \InvalidArgumentException When the target directory does not exist or symlink cannot be used
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
@@ -100,7 +100,8 @@ EOT
         $table = new Table($output);
         $table->setHeaders(array('Source', 'Target', 'Method / Error'));
 
-        $failed = 0;
+        $exitCode = 0;
+        /** @var BundleInterface $bundle */
         foreach ($this->getContainer()->get('kernel')->getBundles() as $bundle) {
             if (!is_dir($originDir = $bundle->getPath().'/Resources/public')) {
                 continue;
@@ -120,7 +121,7 @@ EOT
                 }
             } catch (Exception $e) {
                 $methodOrError = sprintf('<error>%s</error>', $e->getMessage());
-                $failed = 1;
+                $exitCode = 1;
             }
 
             $table->addRow(array($bundle->getNamespace(), $targetDir, $methodOrError));
@@ -128,7 +129,7 @@ EOT
 
         $table->render();
 
-        return $failed;
+        return $exitCode;
     }
 
     /**
