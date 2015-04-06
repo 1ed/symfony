@@ -17,6 +17,7 @@ use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\Filesystem\Exception\IOException;
 use Symfony\Component\Filesystem\Filesystem;
 use Symfony\Component\Finder\Finder;
@@ -30,6 +31,10 @@ use Symfony\Component\HttpKernel\Bundle\BundleInterface;
  */
 class AssetsInstallCommand extends ContainerAwareCommand
 {
+    const METHOD_COPY = 'copy';
+    const METHOD_ABSOLUTE_SYMLINK = 'absolute_symlink';
+    const METHOD_RELATIVE_SYMLINK = 'relative_symlink';
+
     /**
      * @var Filesystem
      */
@@ -76,6 +81,7 @@ EOT
      */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
+        $io = new SymfonyStyle($input, $output);
         $targetArg = rtrim($input->getArgument('target'), '/');
 
         if (!is_dir($targetArg)) {
@@ -88,17 +94,17 @@ EOT
         $bundlesDir = $targetArg.'/bundles/';
         $this->filesystem->mkdir($bundlesDir, 0777);
 
-        // relative implies symlink
-        $symlink = $input->getOption('symlink') || $input->getOption('relative');
-
-        if ($symlink) {
-            $output->writeln('Trying to install assets as <comment>symbolic links</comment>.');
+        if ($input->getOption('relative')) {
+            $expectedMethod = self::METHOD_RELATIVE_SYMLINK;
+            $io->text('Trying to install assets as <info>relative symbolic links</info>.');
+        } elseif ($input->getOption('symlink')) {
+            $expectedMethod = self::METHOD_ABSOLUTE_SYMLINK;
+            $io->text('Trying to install assets as <info>absolute symbolic links</info>.');
         } else {
-            $output->writeln('Installing assets as <comment>hard copies</comment>.');
+            $expectedMethod = self::METHOD_COPY;
+            $io->text('Installing assets as <info>hard copies</info>.');
+            $io->caution('If you make changes you have to run this task again to overwrite public the files.');
         }
-
-        $table = new Table($output);
-        $table->setHeaders(array('Source', 'Target', 'Method / Error'));
 
         $exitCode = 0;
         /** @var BundleInterface $bundle */
@@ -112,22 +118,39 @@ EOT
             try {
                 $this->filesystem->remove($targetDir);
 
-                if ($input->getOption('relative')) {
-                    $methodOrError = $this->relativeSymlinkWithFallback($originDir, $targetDir);
-                } elseif ($symlink) {
-                    $methodOrError = $this->absoluteSymlinkWithFallback($originDir, $targetDir);
+                if (self::METHOD_RELATIVE_SYMLINK === $expectedMethod) {
+                    $method = $this->relativeSymlinkWithFallback($originDir, $targetDir);
+                } elseif (self::METHOD_ABSOLUTE_SYMLINK === $expectedMethod) {
+                    $method = $this->absoluteSymlinkWithFallback($originDir, $targetDir);
                 } else {
-                    $methodOrError = $this->hardCopy($originDir, $targetDir);
+                    $method = $this->hardCopy($originDir, $targetDir);
+                }
+
+                if ($method === $expectedMethod) {
+                    if (OutputInterface::VERBOSITY_VERY_VERBOSE <= $io->getVerbosity()) {
+                        $io->success(sprintf('from "%s" => to "%s"', $bundle->getNamespace(), $targetDir));
+                    } elseif (OutputInterface::VERBOSITY_VERBOSE <= $io->getVerbosity()) {
+                        $io->success($bundle->getName());
+                    }
+                } else {
+                    $io->warning(array(
+                        sprintf('from "%s" => to "%s"', $bundle->getNamespace(), $targetDir),
+                        sprintf('Was expected to install via "%s" but was installed via "%s" instead.', $expectedMethod, $method),
+                    ));
                 }
             } catch (Exception $e) {
-                $methodOrError = sprintf('<error>%s</error>', $e->getMessage());
                 $exitCode = 1;
+                $io->error($e->getMessage());
             }
-
-            $table->addRow(array($bundle->getNamespace(), $targetDir, $methodOrError));
         }
 
-        $table->render();
+        if (OutputInterface::VERBOSITY_NORMAL === $io->getVerbosity()) {
+            if (0 === $exitCode) {
+                $io->success('All bundle assets was successfully installed.');
+            } else {
+                $io->error('Error occurred during installing bundle assets.');
+            }
+        }
 
         return $exitCode;
     }
@@ -146,7 +169,7 @@ EOT
     {
         try {
             $this->symlink($originDir, $targetDir, true);
-            $method = 'relative symlink';
+            $method = self::METHOD_RELATIVE_SYMLINK;
         } catch (IOException $e) {
             $method = $this->absoluteSymlinkWithFallback($originDir, $targetDir);
         }
@@ -168,7 +191,7 @@ EOT
     {
         try {
             $this->symlink($originDir, $targetDir);
-            $method = 'absolute symlink';
+            $method = self::METHOD_ABSOLUTE_SYMLINK;
         } catch (IOException $e) {
             // fall back to copy
             $method = $this->hardCopy($originDir, $targetDir);
@@ -211,6 +234,6 @@ EOT
         // We use a custom iterator to ignore VCS files
         $this->filesystem->mirror($originDir, $targetDir, Finder::create()->ignoreDotFiles(false)->in($originDir));
 
-        return 'copy';
+        return self::METHOD_COPY;
     }
 }
